@@ -1,0 +1,12 @@
+[package]
+name = "ioc_m"
+version = "0.7.0"
+authors = ["Felix Köpge <fkoep@mailbox.org>"]
+license = "MIT"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "0.11", features = ["full"] }
+quote = "0.3"
