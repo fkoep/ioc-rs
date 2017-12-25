@@ -1,8 +1,9 @@
 [package]
 name = "ioc"
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Felix Köpge <fkoep@mailbox.org>"]
 license = "MIT"
+publish = false
 
 description = "An Inversion-of-Control library in Rust."
 documentation = "https://docs.rs/ioc"
@@ -15,14 +16,12 @@ categories = ["data-structures", "rust-patterns"]
 nightly = ["downcast/nightly"]
 
 [dependencies]
-case = "*"
-chashmap = "*"
 downcast = "0.9"
-futures = "*"
 intern = "0.2"
 lazy_static = "*"
-spin = "*"
+quick-error = "*"
+# spin = "*"
 variadic_generics = "0.1"
 
-[dev-dependencies]
-ioc_m = { path = "macros" }
+# [dev-dependencies]
+# ioc_m = { path = "macros" }

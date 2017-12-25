@@ -1,64 +1,81 @@
-use std::error::Error as StdError;
-use std::result::Result as StdResult;
+// use node::Path;
+use downcast::TypeMismatch;
+use std::error::Error;
+use std::fmt;
 
-pub type Error = Box<StdError + Send + Sync>;
-pub type Result<T> = StdResult<T, Error>;
+// pub type GenericError = Box<Error + Send + Sync>;
+// pub type GenericResult<T> = Result<T, GenericError>;
+
+// // TODO Move into node.rs? Naming? InstantiationError?
+// #[derive(Debug)]
+// pub enum ResolveError {
+//     // TODO Naming: FactoryNotFound?
+//     InstanceNotFound(String, String),
+//     InstanceTypeMismatch(Path, String, TypeMismatch),
+//     // DependencyError(Path, String, Box<ResolveError>),
+//     Other(GenericError),
+// }
+
+// impl From<GenericError> for ResolveError {
+//     fn from(e: GenericError) -> Self { ResolveError::Other(e) }
+// }
+
+// impl fmt::Display for ResolveError {
+//     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+//         Ok(()) // TODO
+//     }
+// }
+
+// impl Error for ResolveError {
+//     fn description(&self) -> &str { "" } // TODO
+// }
+
+// pub type ResolveResult<T> = Result<T, ResolveError>;
 
 pub trait Resolve: Sized {
-    // TODO? type Output;
-    type Dependency;
+    type Depend;
+    type Error;
+    fn resolve(dep: Self::Depend) -> Result<Self, Self::Error>;
+}
 
-    fn resolve(dep: Self::Dependency) -> Result<Self>;
+pub trait Resolver {
+    type Error;
 }
 
 /// Careful when using this trait, or you'll be in for a world of stack
 /// overflows.
 ///
-/// TODO Get rid of 'a?
-pub trait ResolveRoot<R> {
-    fn resolve(&self) -> Result<R>;
+/// TODO Naming?
+pub trait ResolveStart<R>: Resolver {
+    fn resolve_start(&self) -> Result<R, Self::Error>;
 }
 
-impl<R, C> ResolveRoot<R> for C
-    where R: Resolve, C: ResolveRoot<R::Dependency>
+// FIXME
+// impl<C> ResolveStart<C> for C
+//     where C: Resolver + Clone
+// {
+//     fn resolve_start(&self) -> Result<C, Self::Error> { self.clone() }
+// }
+
+impl<R, C> ResolveStart<R> for C
+    where R: Resolve, C: ResolveStart<R::Depend>, C::Error: From<R::Error>
 {
-    fn resolve(&self) -> Result<R> {
-        R::resolve(<C as ResolveRoot<R::Dependency>>::resolve(self)?)
+    fn resolve_start(&self) -> Result<R, Self::Error> {
+        Ok(R::resolve(<C as ResolveStart<R::Depend>>::resolve_start(self)?)?)
     }
 }
 
-impl<C> ResolveRoot<()> for C {
-    fn resolve(&self) -> Result<()> { Ok(()) }
-}
-
 va_expand!{ ($va_len:tt) ($($va_idents:ident),+) ($($va_indices:tt),+)
-    impl<$($va_idents,)+ C> ResolveRoot<($($va_idents,)+)> for C
+    impl<$($va_idents,)+ C> ResolveStart<($($va_idents,)+)> for C
     where 
         $($va_idents: Resolve,)+
-        $(C: ResolveRoot<$va_idents::Dependency>,)+
+        $(C: ResolveStart<$va_idents::Depend>,)+
+        $(C::Error: From<$va_idents::Error>,)+
     {
-        fn resolve(&self) -> Result<($($va_idents,)+)> { 
+        fn resolve_start(&self) -> Result<($($va_idents,)+), C::Error> { 
             Ok(($(
-                $va_idents::resolve(<C as ResolveRoot<$va_idents::Dependency>>::resolve(self)?)?,
+                $va_idents::resolve(<C as ResolveStart<$va_idents::Depend>>::resolve_start(self)?)?,
             )+))
         }
     }
 }
-
-// TODO
-// mod compile_test {
-//     pub struct MyCtx;
-
-//     impl ResolveRoot<&MyCtx> for MyCtx {
-//         fn resolve(&self) -> Result<&MyCtx> { Ok(self) }
-//     }
-
-//     pub struct MyRes;
-
-//     impl Resolve for MyRes {
-//         type Dependency = ();
-//         fn resolve(_: Self::Dependency) -> Result<Self> {
-//             Ok(MyRes)
-//         }
-//     }
-// }
