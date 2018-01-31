@@ -1,6 +1,7 @@
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::mem;
 
 pub trait Reflect: 'static {
     fn name_init() -> String;
@@ -10,10 +11,14 @@ pub trait Reflect: 'static {
             static ref NAMES: Mutex<HashMap<TypeId, String>> = Default::default();
         }
 
-        let ptr = NAMES.lock().unwrap()
-            .entry(TypeId::of::<Self>())
-            .or_insert_with(Self::name_init).as_str() as *const str;
-        unsafe { &*ptr }
+        let ty = TypeId::of::<Self>();
+        if !NAMES.lock().unwrap().contains_key(&ty) {
+            let name = Self::name_init();
+            NAMES.lock().unwrap().insert(ty, name);
+        }
+        unsafe { 
+            mem::transmute::<&str, &'static str>(NAMES.lock().unwrap().get(&ty).unwrap().as_str())
+        }
     }
 }
 
