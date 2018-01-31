@@ -1,5 +1,6 @@
 [workspace]
 members = [
     "ioc",
+    "ioc_macro",
     "ioc_cfg"
 ]
