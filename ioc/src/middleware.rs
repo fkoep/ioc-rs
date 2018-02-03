@@ -88,15 +88,14 @@ impl Middleware for Root {
 
 // ++++++++++++++++++++ WithFactory ++++++++++++++++++++
 
-// TODO Naming? 
 #[derive(Constructor)]
-struct InCreateFn {
+pub struct WithShadow {
     inner: Arc<Middleware>,
     service: String,
     alternative: String,
 }
 
-impl Middleware for InCreateFn {
+impl Middleware for WithShadow {
     fn instantiate(&self, mut req: Request) -> Result<Response> {
         if req.service == self.service && req.alternative == self.alternative {
             req.shadow += 1;
@@ -120,7 +119,7 @@ impl Middleware for WithFactory {
     fn instantiate(&self, mut req: Request) -> Result<Response> {
         if req.service == self.service && req.alternative == self.alternative {
             if req.shadow == 0 {
-                let new_top = Arc::new(InCreateFn::new(self.inner.clone(), self.service.clone(), self.alternative.clone()));
+                let new_top = Arc::new(WithShadow::new(self.inner.clone(), self.service.clone(), self.alternative.clone()));
                 match (self.create_fn)(new_top) {
                     Ok(obj) => Ok(Response::new(obj.into(), self.for_cache.clone())),
                     Err(e) => Err(Error::CreationError(req.service, req.alternative, e))
