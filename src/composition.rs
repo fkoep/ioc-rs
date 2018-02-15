@@ -97,7 +97,7 @@ impl Composition {
     }
     
     pub fn resolve<R>(&self) -> Result<R>
-        where R: Resolve, Composition: ResolveStart<R>
+        where Composition: ResolveStart<R>
     {
         self.resolve_start()
     }
