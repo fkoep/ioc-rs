@@ -2,7 +2,7 @@ use std::error::Error;
 
 pub trait Resolve: Sized + 'static {
     type Depend;
-    type Error: Error + Send + Sync + 'static;
+    type Error;
     fn resolve(dep: Self::Depend) -> Result<Self, Self::Error>;
 }
 
@@ -44,14 +44,5 @@ va_expand!{ ($va_len:tt) ($($va_idents:ident),+) ($($va_indices:tt),+)
             )+))
         }
     }
-}
-
-// TODO
-#[macro_export]
-macro_rules! ioc_derive_resolve {
-    ($struct_:ident { $($fields:ident),* $(,)* }) => {
-    };
-    ($struct_:ident) => {
-    };
 }
 

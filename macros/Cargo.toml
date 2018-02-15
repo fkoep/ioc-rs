@@ -1,5 +1,5 @@
 [package]
-name = "ioc_macro"
+name = "ioc_macros"
 version = "0.7.0"
 authors = ["Felix Köpge <fkoep@mailbox.org>"]
 license = "MIT"

@@ -31,6 +31,13 @@ fn cache_name_to_opt(name: &str) -> Option<String> {
 // ++++++++++++++++++++ Composition ++++++++++++++++++++
 
 // TODO move this somewhere else?
+// pub trait Create<T>: Send + Sync + 'static {
+//     type Depend;
+//     type Error: Error + Send + Sync;
+//     fn create(&self, depend: Self::Depend) -> Result<T, Self::Error>;
+// }
+
+// TODO move this somewhere else?
 impl RedirectRules {
     pub fn service<F, T>(mut self)  -> Self 
         where F: Reflect + ?Sized, T: Reflect + ?Sized
@@ -103,17 +110,17 @@ impl Composition {
         Self::new(Arc::new(f(self.0)))
     }
 
-    pub fn with_alternative_fn<Svc, Var, Ca, Impl, E, F>(self, f: F) -> Self
+    pub fn with_alternative_fn<Svc, Alt, Ca, Impl, E, F>(self, f: F) -> Self
     where 
         Svc: Reflect + Send + Sync + ?Sized, 
-        Var: Reflect,
+        Alt: Reflect,
         Ca: Reflect, 
         Impl: Resolve + Unsize<Svc>,
         E: StdError + Send + Sync + 'static,
         F: Fn(&Self) -> StdResult<Impl, E> + Send + Sync + 'static
     {
         let svc = Svc::name().to_owned();
-        let alt = Var::name().to_owned();
+        let alt = Alt::name().to_owned();
         let create_fn = box move |mw| {
             f(&Composition::new(mw))
                 .map(|imp| box {box imp as Box<Svc>} as InstanceObject)
@@ -123,15 +130,15 @@ impl Composition {
         self.map(|this| WithFactory::new(this, svc, alt, create_fn, for_cache))
     }
 
-    pub fn with_alternative<Svc, Var, Ca, Impl>(self) -> Self
+    pub fn with_alternative<Svc, Alt, Ca, Impl>(self) -> Self
     where 
         Svc: Reflect + Send + Sync + ?Sized, 
-        Var: Reflect,
+        Alt: Reflect,
         Ca: Reflect, 
         Impl: Resolve + Unsize<Svc>,
         Self: ResolveStart<Impl>,
     {
-        self.with_alternative_fn::<Svc, Var, Ca, Impl, _, _>(Self::resolve::<Impl>)
+        self.with_alternative_fn::<Svc, Alt, Ca, Impl, _, _>(Self::resolve::<Impl>)
     }
 
     pub fn with_default_fn<Svc, Ca, Impl, E, F>(self, f: F) -> Self
@@ -169,23 +176,23 @@ impl Composition {
 
 // ++++++++++++++++++++ TypedInstanceHandle ++++++++++++++++++++
 
-pub struct TypedInstanceHandle<Svc: ?Sized, Var = Main> {
+pub struct TypedInstanceHandle<Svc: ?Sized, Alt = Main> {
     obj: InstanceHandle,
-    _p: PhantomData<fn(Svc, Var)>,
+    _p: PhantomData<fn(Svc, Alt)>,
 }
 
-impl<Svc, Var> TypedInstanceHandle<Svc, Var>
-    where Svc: Reflect + Instance + ?Sized, Var: Reflect
+impl<Svc, Alt> TypedInstanceHandle<Svc, Alt>
+    where Svc: Reflect + Instance + ?Sized, Alt: Reflect
 {
     pub fn new(obj: InstanceHandle) -> Result<Self> {
         if let Err(e) = Downcast::<Box<Svc>>::downcast_ref(&*obj) {
-            return Err(Error::TypeMismatch(Svc::name().to_owned(), Var::name().to_owned(), e))
+            return Err(Error::TypeMismatch(Svc::name().to_owned(), Alt::name().to_owned(), e))
         }
         Ok(Self{ obj, _p: PhantomData })
     }
 }
 
-impl<Svc, Var> Clone for TypedInstanceHandle<Svc, Var>
+impl<Svc, Alt> Clone for TypedInstanceHandle<Svc, Alt>
     where Svc: Instance + ?Sized
 {
     fn clone(&self) -> Self {
@@ -193,18 +200,18 @@ impl<Svc, Var> Clone for TypedInstanceHandle<Svc, Var>
     }
 }
 
-impl<Svc, Var> Resolve for TypedInstanceHandle<Svc, Var>
-    where Svc: Reflect + Instance + ?Sized, Var: Reflect
+impl<Svc, Alt> Resolve for TypedInstanceHandle<Svc, Alt>
+    where Svc: Reflect + Instance + ?Sized, Alt: Reflect
 {
     type Depend = Composition;
     type Error = Error;
     fn resolve(ref comp: Self::Depend) -> Result<Self> {
-        comp.instantiate(Svc::name().to_owned(), Var::name().to_owned())
+        comp.instantiate(Svc::name().to_owned(), Alt::name().to_owned())
             .and_then(Self::new)
     }
 }
 
-impl<Svc, Var> Deref for TypedInstanceHandle<Svc, Var> 
+impl<Svc, Alt> Deref for TypedInstanceHandle<Svc, Alt> 
     where Svc: Instance + ?Sized
 {
     type Target = Svc;

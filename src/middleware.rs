@@ -8,7 +8,7 @@ pub type GenericError = Box<StdError + Send + Sync>;
 pub type GenericResult<T> = StdResult<T, GenericError>;
 
 quick_error!{
-    // TODO add shadow-level
+    // TODO add shadow-level?
     #[derive(Debug)]
     pub enum Error {
         InstanceNotFound(svc: String, alt: String){
@@ -197,12 +197,12 @@ impl Middleware for WithCache {
         // we may be interested in this response
         req.outer_caches.insert(self.name.clone());
 
-        let service = req.service.clone(); // TODO can we get rid of this?
-        let alternative = req.alternative.clone(); // TODO can we get rid of this?
+        let svc = req.service.clone(); // TODO can we get rid of this?
+        let alt = req.alternative.clone(); // TODO can we get rid of this?
 
         let mut resp = self.inner.instantiate(req)?;
         if resp.for_cache.as_ref() == Some(&self.name) {
-            self.cache.insert_new(service.clone(), alternative.clone(), resp.handle.clone());
+            self.cache.insert_new(svc.clone(), alt.clone(), resp.handle.clone());
             resp.for_cache = None;
         }
         return Ok(resp)
