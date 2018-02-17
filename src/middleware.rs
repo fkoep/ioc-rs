@@ -1,11 +1,9 @@
+use resolve::*;
 use downcast::{Any, TypeMismatch};
 use std::sync::{Arc, RwLock};
 use std::collections::{HashSet, HashMap};
 use std::error::Error as StdError;
 use std::result::Result as StdResult;
-
-pub type GenericError = Box<StdError + Send + Sync>;
-pub type GenericResult<T> = StdResult<T, GenericError>;
 
 quick_error!{
     // TODO add shadow-level?

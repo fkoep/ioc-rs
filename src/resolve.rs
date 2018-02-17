@@ -1,8 +1,12 @@
 use std::error::Error;
 
+// TODO move somewhere else?
+pub type GenericError = Box<Error + Send + Sync>;
+pub type GenericResult<T> = Result<T, GenericError>;
+
 pub trait Resolve: Sized + 'static {
     type Depend;
-    type Error;
+    type Error = GenericError;
     fn resolve(dep: Self::Depend) -> Result<Self, Self::Error>;
 }
 

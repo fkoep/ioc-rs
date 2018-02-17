@@ -1,5 +1,6 @@
 #![feature(box_syntax)]
 #![feature(unsize)]
+#![feature(associated_type_defaults)]
 
 #[macro_use]
 extern crate derive_more;
