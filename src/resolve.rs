@@ -5,33 +5,33 @@ pub type GenericError = Box<Error + Send + Sync>;
 pub type GenericResult<T> = Result<T, GenericError>;
 
 pub trait Resolve: Sized + 'static {
-    type Depend;
-    type Error = GenericError;
-    fn resolve(dep: Self::Depend) -> Result<Self, Self::Error>;
+    type Dep;
+    type Err = GenericError;
+    fn resolve(dep: Self::Dep) -> Result<Self, Self::Err>;
 }
 
 pub trait Container {
-    type Error: Error + Send + Sync + 'static;
+    type Err: Error + Send + Sync + 'static;
 }
 
 /// Careful when using this trait, or you'll be in for a world of stack
 /// overflows.
 pub trait ResolveStart<R>: Container {
     /// TODO should be (self)?
-    fn resolve_start(&self) -> Result<R, Self::Error>;
+    fn resolve_start(&self) -> Result<R, Self::Err>;
 }
 
 impl<C> ResolveStart<()> for C
     where C: Container
 {
-    fn resolve_start(&self) -> Result<(), C::Error> { Ok(()) }
+    fn resolve_start(&self) -> Result<(), C::Err> { Ok(()) }
 }
 
 impl<R, C> ResolveStart<R> for C
-    where R: Resolve, C: ResolveStart<R::Depend>, C::Error: From<R::Error>
+    where R: Resolve, C: ResolveStart<R::Dep>, C::Err: From<R::Err>
 {
-    fn resolve_start(&self) -> Result<R, C::Error> {
-        Ok(R::resolve(<C as ResolveStart<R::Depend>>::resolve_start(self)?)?)
+    fn resolve_start(&self) -> Result<R, C::Err> {
+        Ok(R::resolve(<C as ResolveStart<R::Dep>>::resolve_start(self)?)?)
     }
 }
 
@@ -39,12 +39,12 @@ va_expand!{ ($va_len:tt) ($($va_idents:ident),+) ($($va_indices:tt),+)
     impl<$($va_idents,)+ C> ResolveStart<($($va_idents,)+)> for C
     where 
         $($va_idents: Resolve,)+
-        $(C: ResolveStart<$va_idents::Depend>,)+
-        $(C::Error: From<$va_idents::Error>,)+
+        $(C: ResolveStart<$va_idents::Dep>,)+
+        $(C::Err: From<$va_idents::Err>,)+
     {
-        fn resolve_start(&self) -> Result<($($va_idents,)+), C::Error> { 
+        fn resolve_start(&self) -> Result<($($va_idents,)+), C::Err> { 
             Ok(($(
-                $va_idents::resolve(<C as ResolveStart<$va_idents::Depend>>::resolve_start(self)?)?,
+                $va_idents::resolve(<C as ResolveStart<$va_idents::Dep>>::resolve_start(self)?)?,
             )+))
         }
     }

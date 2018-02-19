@@ -32,9 +32,9 @@ fn cache_name_to_opt(name: &str) -> Option<String> {
 
 // TODO move this somewhere else?
 // pub trait Create<T>: Send + Sync + 'static {
-//     type Depend;
+//     type Dep;
 //     type Error: Error + Send + Sync;
-//     fn create(&self, depend: Self::Depend) -> Result<T, Self::Error>;
+//     fn create(&self, depend: Self::Dep) -> Result<T, Self::Error>;
 // }
 
 // TODO move this somewhere else?
@@ -63,7 +63,7 @@ impl RedirectRules {
 pub struct Composition(Arc<Middleware>);
 
 impl Container for Composition {
-    type Error = Error;
+    type Err = Error;
 }
 
 impl ResolveStart<Composition> for Composition {
@@ -203,9 +203,9 @@ impl<Svc, Alt> Clone for TypedInstanceHandle<Svc, Alt>
 impl<Svc, Alt> Resolve for TypedInstanceHandle<Svc, Alt>
     where Svc: Reflect + Instance + ?Sized, Alt: Reflect
 {
-    type Depend = Composition;
-    type Error = Error;
-    fn resolve(ref comp: Self::Depend) -> Result<Self> {
+    type Dep = Composition;
+    type Err = Error;
+    fn resolve(ref comp: Self::Dep) -> Result<Self> {
         comp.instantiate(Svc::name().to_owned(), Alt::name().to_owned())
             .and_then(Self::new)
     }
