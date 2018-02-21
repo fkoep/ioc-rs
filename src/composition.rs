@@ -2,6 +2,7 @@ use reflect::Reflect;
 use resolve::*;
 use middleware::*;
 use downcast::Downcast;
+use std::collections::BTreeMap;
 use std::marker::{PhantomData, Unsize};
 use std::sync::Arc;
 use std::ops::{Deref};
@@ -61,6 +62,10 @@ impl RedirectRules {
 
 #[derive(Clone)]
 pub struct Composition(Arc<Middleware>);
+// TODO
+// pub struct Composition {
+//     inner: Arc<Middleware>
+// }
 
 impl Container for Composition {
     type Err = Error;
@@ -86,14 +91,22 @@ impl<R> ResolveStart<Option<R>> for Composition
 impl Composition {
     pub fn new(mw: Arc<Middleware>) -> Self { Composition(mw) }
     
-    pub fn instantiate(&self, svc: String, alt: String) -> Result<InstanceHandle> {
-        let req = Request::new(self.0.clone(), svc, alt);
+    pub fn instantiate(&self, svc: &str, alt: &str) -> Result<InstanceHandle> {
+        let req = Request::new(self.0.clone(), svc.to_owned(), alt.to_owned());
         let resp = self.0.instantiate(req)?;
         if let Some(for_cache) = resp.for_cache {
-            /* TODO return error? */
+            /* TODO return error */
             assert_eq!(for_cache, Return::name(), "Missing cache '{}'", for_cache);
         }
         Ok(resp.handle)
+    }
+
+    pub fn instantiate_all(&self, svc: &str) -> Result<InstanceRepo> {
+        let mut ret = InstanceRepo::new();
+        for alt in self.0.list_alternatives(svc) {
+            ret.insert(svc.to_owned(), self.instantiate(svc, &alt)?);
+        }
+        Ok(ret)
     }
     
     pub fn resolve<R>(&self) -> Result<R>
@@ -115,7 +128,7 @@ impl Composition {
         Svc: Reflect + Send + Sync + ?Sized, 
         Alt: Reflect,
         Ca: Reflect, 
-        Impl: Resolve + Unsize<Svc>,
+        Impl: Unsize<Svc>,
         E: StdError + Send + Sync + 'static,
         F: Fn(&Self) -> StdResult<Impl, E> + Send + Sync + 'static
     {
@@ -141,18 +154,18 @@ impl Composition {
         self.with_alternative_fn::<Svc, Alt, Ca, Impl, _, _>(Self::resolve::<Impl>)
     }
 
-    pub fn with_default_fn<Svc, Ca, Impl, E, F>(self, f: F) -> Self
+    pub fn with_main_fn<Svc, Ca, Impl, E, F>(self, f: F) -> Self
     where 
         Svc: Reflect + Send + Sync + ?Sized, 
         Ca: Reflect, 
-        Impl: Resolve + Unsize<Svc>,
+        Impl: Unsize<Svc>,
         E: StdError + Send + Sync + 'static,
         F: Fn(&Self) -> StdResult<Impl, E> + Send + Sync + 'static
     {
         self.with_alternative_fn::<Svc, Main, Ca, Impl, E, F>(f)
     }
 
-    pub fn with_default<Svc, Ca, Impl>(self) -> Self
+    pub fn with_main<Svc, Ca, Impl>(self) -> Self
     where 
         Svc: Reflect + Send + Sync + ?Sized, 
         Ca: Reflect,
@@ -177,16 +190,17 @@ impl Composition {
 // ++++++++++++++++++++ TypedInstanceHandle ++++++++++++++++++++
 
 pub struct TypedInstanceHandle<Svc: ?Sized, Alt = Main> {
+    // TODO Naming: inner
     obj: InstanceHandle,
     _p: PhantomData<fn(Svc, Alt)>,
 }
 
 impl<Svc, Alt> TypedInstanceHandle<Svc, Alt>
-    where Svc: Reflect + Instance + ?Sized, Alt: Reflect
+    where Svc: Instance + ?Sized
 {
-    pub fn new(obj: InstanceHandle) -> Result<Self> {
+    fn new(obj: InstanceHandle, svc: &str, alt: &str) -> Result<Self> {
         if let Err(e) = Downcast::<Box<Svc>>::downcast_ref(&*obj) {
-            return Err(Error::TypeMismatch(Svc::name().to_owned(), Alt::name().to_owned(), e))
+            return Err(Error::TypeMismatch(svc.to_owned(), alt.to_owned(), e))
         }
         Ok(Self{ obj, _p: PhantomData })
     }
@@ -205,9 +219,11 @@ impl<Svc, Alt> Resolve for TypedInstanceHandle<Svc, Alt>
 {
     type Dep = Composition;
     type Err = Error;
-    fn resolve(ref comp: Self::Dep) -> Result<Self> {
-        comp.instantiate(Svc::name().to_owned(), Alt::name().to_owned())
-            .and_then(Self::new)
+    fn resolve(comp: Self::Dep) -> Result<Self> {
+        let svc = Svc::name();
+        let alt = Alt::name();
+        comp.instantiate(svc, alt)
+            .and_then(|h| Self::new(h, svc, alt))
     }
 }
 
@@ -218,5 +234,49 @@ impl<Svc, Alt> Deref for TypedInstanceHandle<Svc, Alt>
     fn deref(&self) -> &Self::Target { 
         Downcast::<Box<Svc>>::downcast_ref(&*self.obj).unwrap()
     }
+}
+
+// ++++++++++++++++++++ TypedInstanceRepo ++++++++++++++++++++
+
+pub struct TypedInstanceRepo<Svc: ?Sized> {
+    inner: BTreeMap<String, TypedInstanceHandle<Svc>>
+}
+
+impl<Svc> TypedInstanceRepo<Svc>
+    where Svc: Instance + ?Sized
+{
+    pub fn new(repo: InstanceRepo, svc: &str) -> Result<Self> {
+        let mut inner = BTreeMap::new();
+        for (alt, handle) in repo {
+            inner.insert(alt.clone(), TypedInstanceHandle::new(handle, svc, &alt)?);
+        }
+        Ok(Self{ inner })
+    }
+}
+
+impl<Svc> Clone for TypedInstanceRepo<Svc>
+    where Svc: Instance + ?Sized
+{
+    fn clone(&self) -> Self {
+        Self{ inner: self.inner.clone() }
+    }
+}
+
+impl<Svc> Resolve for TypedInstanceRepo<Svc>
+    where Svc: Reflect + Instance + ?Sized
+{
+    type Dep = Composition;
+    type Err = Error;
+    fn resolve(comp: Self::Dep) -> Result<Self> {
+        let svc = Svc::name();
+        Ok(Self::new(comp.instantiate_all(svc)?, svc)?)
+    }
+}
+
+impl<Svc> Deref for TypedInstanceRepo<Svc> 
+    where Svc: Instance + ?Sized
+{
+    type Target = BTreeMap<String, TypedInstanceHandle<Svc>>;
+    fn deref(&self) -> &Self::Target { &self.inner }
 }
 
