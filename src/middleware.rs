@@ -1,7 +1,7 @@
 use resolve::*;
 use downcast::{Any, TypeMismatch};
 use std::sync::{Arc, RwLock};
-use std::collections::{HashSet, HashMap};
+use std::collections::{BTreeSet, BTreeMap};
 use std::error::Error as StdError;
 use std::result::Result as StdResult;
 
@@ -34,8 +34,9 @@ quick_error!{
 
 pub type Result<T> = StdResult<T, Error>;
 
-// ++++++++++++++++++++ Middleware ++++++++++++++++++++
+// ++++++++++++++++++++ Instance ++++++++++++++++++++
 
+/// TODO Naming? `Service`?
 pub trait Instance: Any + Send + Sync {}
 
 impl<T> Instance for T
@@ -47,20 +48,24 @@ downcast!(Instance);
 pub type InstanceObject = Box<Instance>;
 pub type InstanceHandle = Arc<Instance>;
 
+pub type InstanceRepo = BTreeMap<String, InstanceHandle>;
+
+// ++++++++++++++++++++ Middleware ++++++++++++++++++++
+
 pub struct Request {
     pub top: Arc<Middleware>,
     pub service: String,
     pub alternative: String,
     pub shadow: u32, 
-    /// TODO naming? `interested_caches`?
-    pub outer_caches: HashSet<String>,
+    /// TODO Naming? `interested_caches`?
+    pub outer_caches: BTreeSet<String>,
 }
 
 impl Request {
      pub fn new(top: Arc<Middleware>, service: String, alternative: String) -> Self {
         Self{ top, service, alternative, shadow: 0, outer_caches: Default::default() }
      }
- }
+}
 
 #[derive(Constructor)]
 pub struct Response {
@@ -72,6 +77,8 @@ pub struct Response {
 
 pub trait Middleware: Send + Sync + 'static {
     fn instantiate(&self, req: Request) -> Result<Response>;
+    /// TODO should `svc` be &str?
+    fn list_alternatives(&self, svc: &str) -> BTreeSet<String>;
 }
 
 // ++++++++++++++++++++ Root ++++++++++++++++++++
@@ -81,6 +88,9 @@ pub struct Root;
 impl Middleware for Root {
     fn instantiate(&self, req: Request) -> Result<Response> {
         Err(Error::InstanceNotFound(req.service, req.alternative))
+    }
+    fn list_alternatives(&self, _svc: &str) -> BTreeSet<String> {
+        BTreeSet::new()
     }
 }
 
@@ -100,6 +110,9 @@ impl Middleware for WithShadow {
         }
         self.inner.instantiate(req)
     }
+    fn list_alternatives(&self, svc: &str) -> BTreeSet<String> {
+        self.inner.list_alternatives(svc)
+    }
 }
 
 pub type CreateFn = Fn(Arc<Middleware>) -> GenericResult<InstanceObject> + Send + Sync;
@@ -107,21 +120,27 @@ pub type CreateFn = Fn(Arc<Middleware>) -> GenericResult<InstanceObject> + Send 
 #[derive(Constructor)]
 pub struct WithFactory {
     inner: Arc<Middleware>,
-    service: String,
-    alternative: String,
+    svc: String,
+    alt: String,
     create_fn: Box<CreateFn>,
     for_cache: Option<String>,
 }
 
+impl WithFactory {
+    fn create(&self, top: &Arc<Middleware>) -> Result<Response> {
+        let new_top = Arc::new(WithShadow::new(top.clone(), self.svc.clone(), self.alt.clone()));
+        match (self.create_fn)(new_top) {
+            Ok(obj) => Ok(Response::new(obj.into(), self.for_cache.clone())),
+            Err(e) => Err(Error::CreationError(self.svc.clone(), self.alt.clone(), e))
+        }
+    }
+}
+
 impl Middleware for WithFactory {
     fn instantiate(&self, mut req: Request) -> Result<Response> {
-        if req.service == self.service && req.alternative == self.alternative {
+        if self.svc == req.service && self.alt == req.alternative {
             if req.shadow == 0 {
-                let new_top = Arc::new(WithShadow::new(self.inner.clone(), self.service.clone(), self.alternative.clone()));
-                match (self.create_fn)(new_top) {
-                    Ok(obj) => Ok(Response::new(obj.into(), self.for_cache.clone())),
-                    Err(e) => Err(Error::CreationError(req.service, req.alternative, e))
-                }
+                self.create(&req.top)
             } else {
                 req.shadow -= 1;
                 self.inner.instantiate(req)
@@ -130,13 +149,22 @@ impl Middleware for WithFactory {
             self.inner.instantiate(req)
         }
     }
+    fn list_alternatives(&self, svc: &str) -> BTreeSet<String> {
+        if self.svc == svc {
+            let mut ret = self.inner.list_alternatives(svc);
+            if !ret.contains(&self.alt) { ret.insert(self.alt.to_owned()); }
+            ret
+        } else {
+            self.inner.list_alternatives(svc)
+        }
+    }
 }
 
 // ++++++++++++++++++++ WithCache ++++++++++++++++++++
 
 #[derive(Default)]
 struct Cache {
-    repos: RwLock<HashMap<String, HashMap<String, InstanceHandle>>>
+    repos: RwLock<BTreeMap<String, BTreeMap<String, InstanceHandle>>>
 }
 
 impl Cache {
@@ -205,15 +233,18 @@ impl Middleware for WithCache {
         }
         return Ok(resp)
     }
+    fn list_alternatives(&self, svc: &str) -> BTreeSet<String> {
+        self.inner.list_alternatives(svc)
+    }
 }
 
 // ++++++++++++++++++++ WithRedirects ++++++++++++++++++++
 
 #[derive(Default)]
 pub struct RedirectRules {
-    pub service: HashMap<String, String>,
-    pub alternative: HashMap<String, String>,
-    pub for_cache: HashMap<Option<String>, Option<String>>,
+    pub service: BTreeMap<String, String>,
+    pub alternative: BTreeMap<String, String>,
+    pub for_cache: BTreeMap<Option<String>, Option<String>>,
 }
 
 #[derive(Constructor)]
@@ -238,5 +269,12 @@ impl Middleware for WithRedirects {
             resp.for_cache = dest.clone();
         }
         Ok(resp)
+    }
+    fn list_alternatives(&self, svc: &str) -> BTreeSet<String> {
+        let dest_svc = self.rules.service.get(svc).map(|d| &**d).unwrap_or(svc);
+        self.inner.list_alternatives(dest_svc)
+            .into_iter()
+            .map(|alt| self.rules.alternative.get(&alt).map(|d| d.clone()).unwrap_or(alt))
+            .collect()
     }
 }

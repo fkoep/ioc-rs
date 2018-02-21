@@ -24,5 +24,6 @@ pub use middleware::*;
 pub use composition::*;
 
 pub use TypedInstanceHandle as I;
+pub use TypedInstanceRepo as Repo;
 pub fn root() -> Composition { Composition::root() }
 pub fn redirect_rules() -> RedirectRules { RedirectRules::default() }
