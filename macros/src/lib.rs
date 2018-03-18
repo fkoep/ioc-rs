@@ -59,3 +59,38 @@ fn impl_reflect(base_name: String, item_ast: syn::Item) -> quote::Tokens {
         }
     }
 }
+
+#[proc_macro_derive(IocResolve)]
+pub fn ioc_resolve(item: TokenStream) -> TokenStream {
+    let item_ast = syn::parse_item(&item.to_string()).unwrap();
+
+    let impl_gen = impl_resolve(item_ast.clone());
+    quote!(
+        // #item_ast
+        #impl_gen
+    ).parse().unwrap()
+}
+
+fn impl_resolve(item_ast: syn::Item) -> quote::Tokens {
+    let ident = item_ast.ident;
+    let (fields, generics) = match item_ast.node {
+        syn::ItemKind::Struct(syn::VariantData::Struct(f), g) => (f, g),
+        syn::ItemKind::Struct(syn::VariantData::Unit, g) => (vec!(), g),
+        _ => panic!("ioc::Resolve-impl can only be generated for non-tuple structs")
+    };
+
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let field_idents: Vec<_> = fields.iter().map(|f| f.ident.as_ref().unwrap().clone()).collect();
+    let field_idents2 = field_idents.clone();
+    let field_tys: Vec<_> = fields.iter().map(|f| f.ty.clone()).collect();
+
+    quote!{
+        impl #impl_generics ::ioc::Resolve for #ident #ty_generics #where_clause {
+            type Dep = (#(#field_tys,)*);
+            type Err = ::ioc::GenericError;
+            fn resolve((#(#field_idents,)*): Self::Dep) -> ::std::result::Result<Self, Self::Err> {
+                Ok(Self{ #(#field_idents2,)* })
+            }
+        }
+    }
+}
