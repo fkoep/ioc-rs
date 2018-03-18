@@ -70,6 +70,7 @@ impl Request {
 #[derive(Constructor)]
 pub struct Response {
     pub handle: InstanceHandle,
+    // TODO naming? `target`?
     pub for_cache: Option<String>,
     //TODO, also check in WithCache
     //pub shadow: u32
@@ -77,7 +78,6 @@ pub struct Response {
 
 pub trait Middleware: Send + Sync + 'static {
     fn instantiate(&self, req: Request) -> Result<Response>;
-    /// TODO should `svc` be &str?
     fn list_alternatives(&self, svc: &str) -> BTreeSet<String>;
 }
 
@@ -99,13 +99,13 @@ impl Middleware for Root {
 #[derive(Constructor)]
 pub struct WithShadow {
     inner: Arc<Middleware>,
-    service: String,
-    alternative: String,
+    svc: String,
+    alt: String,
 }
 
 impl Middleware for WithShadow {
     fn instantiate(&self, mut req: Request) -> Result<Response> {
-        if req.service == self.service && req.alternative == self.alternative {
+        if req.service == self.svc && req.alternative == self.alt {
             req.shadow += 1;
         }
         self.inner.instantiate(req)
@@ -115,7 +115,7 @@ impl Middleware for WithShadow {
     }
 }
 
-pub type CreateFn = Fn(Arc<Middleware>) -> GenericResult<InstanceObject> + Send + Sync;
+pub type CreateFn = Fn(Arc<Middleware>) -> GenericResult<InstanceHandle> + Send + Sync;
 
 #[derive(Constructor)]
 pub struct WithFactory {
@@ -130,7 +130,7 @@ impl WithFactory {
     fn create(&self, top: &Arc<Middleware>) -> Result<Response> {
         let new_top = Arc::new(WithShadow::new(top.clone(), self.svc.clone(), self.alt.clone()));
         match (self.create_fn)(new_top) {
-            Ok(obj) => Ok(Response::new(obj.into(), self.for_cache.clone())),
+            Ok(h) => Ok(Response::new(h, self.for_cache.clone())),
             Err(e) => Err(Error::CreationError(self.svc.clone(), self.alt.clone(), e))
         }
     }

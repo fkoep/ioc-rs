@@ -12,13 +12,13 @@ use std::error::Error as StdError;
 pub struct Main(());
 
 impl Reflect for Main {
-    fn name_init() -> String { "main".to_owned() }
+    fn name_init() -> String { "Main".to_owned() }
 }
 
 pub struct Return(());
 
 impl Reflect for Return {
-    fn name_init() -> String { "return".to_owned() }
+    fn name_init() -> String { "Return".to_owned() }
 }
 
 fn cache_name_to_opt(name: &str) -> Option<String> {
@@ -62,10 +62,6 @@ impl RedirectRules {
 
 #[derive(Clone)]
 pub struct Composition(Arc<Middleware>);
-// TODO
-// pub struct Composition {
-//     inner: Arc<Middleware>
-// }
 
 impl Container for Composition {
     type Err = Error;
@@ -104,7 +100,8 @@ impl Composition {
     pub fn instantiate_all(&self, svc: &str) -> Result<InstanceRepo> {
         let mut ret = InstanceRepo::new();
         for alt in self.0.list_alternatives(svc) {
-            ret.insert(svc.to_owned(), self.instantiate(svc, &alt)?);
+            let inst = self.instantiate(svc, &alt)?;
+            ret.insert(alt, inst);
         }
         Ok(ret)
     }
@@ -123,6 +120,29 @@ impl Composition {
         Self::new(Arc::new(f(self.0)))
     }
 
+    // pub fn with_alternative_simple_obj<Svc, Alt>(self, obj: Svc) -> Self 
+    // where 
+    //     Svc: Reflect + Send + Sync,
+    //     Alt: Reflect
+    // {
+    //     let svc = Svc::name().to_owned();
+    //     let alt = Alt::name().to_owned();
+    //     let h: InstanceHandle = Arc::from(box {box obj} as InstanceObject);
+    //     self.map(|this| WithFactory::new(this, svc, alt, box move |_| Ok(h.clone()), None))
+    // }
+
+    pub fn with_alternative_obj<Svc, Alt, Impl>(self, obj: Impl) -> Self 
+    where 
+        Svc: Reflect + Send + Sync + ?Sized, 
+        Alt: Reflect,
+        Impl: Unsize<Svc>
+    {
+        let svc = Svc::name().to_owned();
+        let alt = Alt::name().to_owned();
+        let h: InstanceHandle = Arc::from(box {box obj as Box<Svc>} as InstanceObject);
+        self.map(|this| WithFactory::new(this, svc, alt, box move |_| Ok(h.clone()), None))
+    }
+
     pub fn with_alternative_fn<Svc, Alt, Ca, Impl, E, F>(self, f: F) -> Self
     where 
         Svc: Reflect + Send + Sync + ?Sized, 
@@ -136,7 +156,7 @@ impl Composition {
         let alt = Alt::name().to_owned();
         let create_fn = box move |mw| {
             f(&Composition::new(mw))
-                .map(|imp| box {box imp as Box<Svc>} as InstanceObject)
+                .map(|obj| Arc::from(box {box obj as Box<Svc>} as InstanceObject))
                 .map_err(|e| box e as GenericError)
         };
         let for_cache = cache_name_to_opt(Ca::name());
@@ -152,6 +172,14 @@ impl Composition {
         Self: ResolveStart<Impl>,
     {
         self.with_alternative_fn::<Svc, Alt, Ca, Impl, _, _>(Self::resolve::<Impl>)
+    }
+
+    pub fn with_main_obj<Svc, Impl>(self, obj: Impl) -> Self 
+    where 
+        Svc: Reflect + Send + Sync + ?Sized, 
+        Impl: Unsize<Svc>
+    {
+        self.with_alternative_obj::<Svc, Main, Impl>(obj)
     }
 
     pub fn with_main_fn<Svc, Ca, Impl, E, F>(self, f: F) -> Self
@@ -252,6 +280,8 @@ impl<Svc> TypedInstanceRepo<Svc>
         }
         Ok(Self{ inner })
     }
+    // TODO remove?
+    pub fn into_inner(self) -> BTreeMap<String, TypedInstanceHandle<Svc>> { self.inner }
 }
 
 impl<Svc> Clone for TypedInstanceRepo<Svc>
