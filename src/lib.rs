@@ -198,6 +198,13 @@ pub struct Container {
     middleware: Arc<dyn Middleware>,
 }
 
+impl Resolve for Container {
+    type Deps = Arc<dyn Middleware>;
+    fn resolve(middleware: Self::Deps) -> Result<Self> {
+        Ok(Container{ middleware })
+    }
+}
+
 impl Default for Container {
     fn default() -> Self{ Self::new(Arc::new(ContainerRoot)) }
 }
