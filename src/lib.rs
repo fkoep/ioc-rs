@@ -1,5 +1,3 @@
-#![feature(unboxed_closures, fn_traits)]
-
 #[macro_use]
 extern crate derive_more;
 extern crate downcast;
@@ -9,9 +7,10 @@ extern crate variadic_generics;
 use downcast::{AnySync, TypeMismatch};
 use once_cell::sync::OnceCell;
 use variadic_generics::va_expand;
-use std::sync::Arc;
 use std::error::Error as StdError;
 use std::result::Result as StdResult;
+use std::sync::Arc;
+use std::collections::HashMap;
 
 // errors --------------------------------------------------
 
@@ -82,16 +81,6 @@ va_expand!{ ($va_len:tt) ($($va_idents:ident),+) ($($va_indices:tt),+)
     }
 }
 
-// Middleware --------------------------------------------------
-
-pub trait Middleware: Send + Sync + 'static {
-    fn instantiate(&self, top: &Arc<dyn Middleware>, service: &str) -> Result<InstanceRef>;
-}
-
-impl ResolveStart<Arc<dyn Middleware>> for Arc<dyn Middleware> {
-    fn resolve_start(&self) -> Result<Arc<dyn Middleware>> { Ok(self.clone()) }
-}
-
 // Service --------------------------------------------------
 
 pub trait Service: Send + Sync + 'static {
@@ -100,6 +89,38 @@ pub trait Service: Send + Sync + 'static {
             .replace("dyn ", "")
             .replace("::", ".")
     }
+}
+
+// Middleware --------------------------------------------------
+
+#[derive(Clone)]
+pub struct InstantiationRequest {
+    pub top: Arc<dyn Middleware>,
+    pub service_name: String,
+    pub shadow_levels: HashMap<String, usize>,
+}
+
+impl InstantiationRequest {
+    pub fn increment_shadow(&mut self, service_name: &str){
+        let level = self.shadow_levels.entry(service_name.to_owned())
+            .or_insert(0);
+        *level += 1;
+    }
+    
+    /// returns true if successfully decremented
+    pub fn decrement_shadow(&mut self, service_name: &str) -> bool {
+        self.shadow_levels.get_mut(service_name)
+            .map(|level| level.saturating_sub(1))
+            .unwrap_or(1) != 0
+    }
+}
+
+pub trait Middleware: Send + Sync + 'static {
+    fn instantiate(&self, req: InstantiationRequest) -> Result<InstanceRef>;
+}
+
+impl ResolveStart<Arc<dyn Middleware>> for Arc<dyn Middleware> {
+    fn resolve_start(&self) -> Result<Arc<dyn Middleware>> { Ok(self.clone()) }
 }
 
 // InstanceRef & TypedInstanceRef --------------------------------------------------
@@ -113,29 +134,55 @@ impl<S> Resolve for TypedInstanceRef<S>
     where S: Service + ?Sized
 {
     type Deps = Arc<dyn Middleware>;
-    fn resolve(mw: Self::Deps) -> Result<Self> {
-        let service_name = S::service_name();
-        mw.instantiate(&mw, &service_name)?
+    fn resolve(top: Self::Deps) -> Result<Self> {
+        let req = InstantiationRequest{
+            top: top.clone(),
+            service_name: S::service_name(),
+            shadow_levels: Some((S::service_name(), 1)).into_iter().collect(),
+        };
+        top.instantiate(req)?
             .downcast_arc::<Box<S>>()
-            .map_err(|err| InstanceTypeError::new(service_name.to_owned(), err.type_mismatch()).into())
+            .map_err(|err| InstanceTypeError::new(S::service_name(), err.type_mismatch()).into())
     }
 }
 
-// middleware implementations --------------------------------------------------
-
-#[allow(type_alias_bounds)]
-pub type CreationFn<T: ?Sized> = Arc<dyn (Fn(&Arc<dyn Middleware>) -> Result<Box<T>>) + Send + Sync>;
+// Middleware: ContainerRoot --------------------------------------------------
 
 pub struct ContainerRoot;
 
 impl Middleware for ContainerRoot {
-    fn instantiate(&self, _top: &Arc<dyn Middleware>, service_name: &str) -> Result<InstanceRef> {
-        return Err(InstancerNotFoundError::new(service_name.to_owned()).into())
+    fn instantiate(&self, req: InstantiationRequest) -> Result<InstanceRef> {
+        return Err(InstancerNotFoundError::new(req.service_name).into())
     }
 }
 
+// Middleware: SingletonInstance, TransientInstancer  --------------------------------------------------
+
+pub struct InstancerShadow {
+    prev: Arc<dyn Middleware>,
+    shadowed_service_name: String
+}
+
+impl InstancerShadow {
+    pub fn new(prev: Arc<dyn Middleware>, shadowed_service_name: String) -> Self {
+        Self{ prev, shadowed_service_name }
+    }
+}
+
+impl Middleware for InstancerShadow {
+    fn instantiate(&self, mut req: InstantiationRequest) -> Result<InstanceRef> {
+        if self.shadowed_service_name == req.service_name {
+            req.increment_shadow(&self.shadowed_service_name)
+        }
+        self.prev.instantiate(req)
+    }
+}
+
+#[allow(type_alias_bounds)]
+pub type CreationFn<T: ?Sized> = Arc<dyn (Fn(&Arc<dyn Middleware>) -> Result<Box<T>>) + Send + Sync>;
+
 pub struct SingletonInstancer<T: ?Sized> {
-    previous: Arc<dyn Middleware>,
+    prev: Arc<dyn Middleware>,
     creation_fn: CreationFn<T>,
     instance: OnceCell<Arc<Box<T>>>,
     service_name: String,
@@ -144,27 +191,36 @@ pub struct SingletonInstancer<T: ?Sized> {
 impl<T> SingletonInstancer<T>
     where T: Service + ?Sized
 {
-    pub fn new(previous: Arc<dyn Middleware>, creation_fn: CreationFn<T>) -> Self {
+    pub fn new(prev: Arc<dyn Middleware>, creation_fn: CreationFn<T>) -> Self {
         let service_name = T::service_name();
-        Self{ previous, creation_fn, instance: OnceCell::new(), service_name } 
+        Self{ prev, creation_fn, instance: OnceCell::new(), service_name } 
     }
 }
 
 impl<T> Middleware for SingletonInstancer<T>
     where T: Service + ?Sized
 {
-    fn instantiate(&self, top: &Arc<dyn Middleware>, service_name: &str) -> Result<InstanceRef> {
-        if service_name != self.service_name {
-    	    return self.previous.instantiate(top, service_name)
+    fn instantiate(&self, mut req: InstantiationRequest) -> Result<InstanceRef> {
+        // if different service or shadowed, pass request (with one less shadow level) up the chain
+        if req.service_name != self.service_name
+        || req.decrement_shadow(&self.service_name)
+        {
+    	    return self.prev.instantiate(req)
         }
-        self.instance.get_or_try_init(|| (self.creation_fn)(top).map(Arc::new))
+        
+        // increase shadow level
+        req.increment_shadow(&self.service_name);
+        let shadowed_top: Arc<dyn Middleware> = Arc::new(InstancerShadow::new(req.top, self.service_name.clone()));
+        
+        // recall or create instance
+        self.instance.get_or_try_init(move || (self.creation_fn)(&shadowed_top).map(Arc::new))
             .map(|inst| inst.clone() as Arc<dyn AnySync>)
-            .map_err(|err| InstanceCreationError::new(service_name.to_owned(), err).into())
+            .map_err(|err| InstanceCreationError::new(self.service_name.clone(), err).into())
     }
 }
 
 pub struct TransientInstancer<T: ?Sized> {
-    previous: Arc<dyn Middleware>,
+    prev: Arc<dyn Middleware>,
     creation_fn: CreationFn<T>,
     service_name: String,
 }
@@ -172,22 +228,31 @@ pub struct TransientInstancer<T: ?Sized> {
 impl<T> TransientInstancer<T>
     where T: Service + ?Sized
 {
-    pub fn new(previous: Arc<dyn Middleware>, creation_fn: CreationFn<T>) -> Self {
+    pub fn new(prev: Arc<dyn Middleware>, creation_fn: CreationFn<T>) -> Self {
         let service_name = T::service_name();
-        Self{ previous, creation_fn, service_name } 
+        Self{ prev, creation_fn, service_name } 
     }
 }
 
 impl<T> Middleware for TransientInstancer<T>
     where T: Service + ?Sized
 {
-    fn instantiate(&self, top: &Arc<dyn Middleware>, service_name: &str) -> Result<InstanceRef> {
-        if service_name != self.service_name {
-    	    return self.previous.instantiate(top, service_name)
+    fn instantiate(&self, mut req: InstantiationRequest) -> Result<InstanceRef> {
+        // if different service or shadowed, pass request (with one less shadow level) up the chain
+        if req.service_name != self.service_name
+        || req.decrement_shadow(&self.service_name)
+        {
+    	    return self.prev.instantiate(req)
         }
-        (self.creation_fn)(top)
+        
+        // increase shadow level
+        req.increment_shadow(&self.service_name);
+        let shadowed_top: Arc<dyn Middleware> = Arc::new(InstancerShadow::new(req.top, self.service_name.clone()));
+        
+        // create instance
+        (self.creation_fn)(&shadowed_top)
             .map(|inst| Arc::new(inst) as InstanceRef)
-            .map_err(|err| InstanceCreationError::new(service_name.to_owned(), err).into())
+            .map_err(|err| InstanceCreationError::new(self.service_name.clone(), err).into())
     }
 }
 
@@ -195,13 +260,13 @@ impl<T> Middleware for TransientInstancer<T>
 
 #[derive(Clone)]
 pub struct Container {
-    middleware: Arc<dyn Middleware>,
+    top: Arc<dyn Middleware>,
 }
 
 impl Resolve for Container {
     type Deps = Arc<dyn Middleware>;
-    fn resolve(middleware: Self::Deps) -> Result<Self> {
-        Ok(Container{ middleware })
+    fn resolve(top: Self::Deps) -> Result<Self> {
+        Ok(Container{ top })
     }
 }
 
@@ -210,47 +275,42 @@ impl Default for Container {
 }
 
 impl Container {
-    pub fn new(middleware: Arc<dyn Middleware>) -> Self {
-        Self{ middleware }
-    }
-    
-    pub fn with<M: Middleware>(&self, f: impl FnOnce(Arc<dyn Middleware>) -> M) -> Self {
-        let new_mw = f(self.middleware.clone());
-        Self::new(Arc::new(new_mw))
+    pub fn new(top: Arc<dyn Middleware>) -> Self {
+        Self{ top }
     }
 
-    pub fn with_singleton<S, Args>(&self, f: impl Fn<Args, Output = Result<Box<S>>> + Send + Sync + 'static) -> Self
+    pub fn with_singleton<S, Args>(&self, f: impl Fn(Args) -> Result<Box<S>> + Send + Sync + 'static) -> Self
         where S: Service + ?Sized, Arc<dyn Middleware>: ResolveStart<Args>
     {
-    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f.call(mw.resolve_start()?)?);
-        self.with(move |mw| SingletonInstancer::new(mw, Arc::new(creation_fn)))
+    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f(mw.resolve_start()?)?);
+        Self::new(Arc::new(SingletonInstancer::new(self.top.clone(), Arc::new(creation_fn))))
     }
 
-    pub fn with_singleton_ok<S, Args>(&self, f: impl Fn<Args, Output = Box<S>> + Send + Sync + 'static) -> Self
+    pub fn with_singleton_ok<S, Args>(&self, f: impl Fn(Args) -> Box<S> + Send + Sync + 'static) -> Self
         where S: Service + ?Sized, Arc<dyn Middleware>: ResolveStart<Args>
     {
-    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f.call(mw.resolve_start()?));
-        self.with(move |mw| SingletonInstancer::new(mw, Arc::new(creation_fn)))
+    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f(mw.resolve_start()?));
+        Self::new(Arc::new(SingletonInstancer::new(self.top.clone(), Arc::new(creation_fn))))
     }
 
-    pub fn with_transient<S, Args>(&self, f: impl Fn<Args, Output = Result<Box<S>>> + Send + Sync + 'static) -> Self
+    pub fn with_transient<S, Args>(&self, f: impl Fn(Args) -> Result<Box<S>> + Send + Sync + 'static) -> Self
         where S: Service + ?Sized, Arc<dyn Middleware>: ResolveStart<Args>
     {
-    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f.call(mw.resolve_start()?)?);
-        self.with(move |mw| TransientInstancer::new(mw, Arc::new(creation_fn)))
+    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f(mw.resolve_start()?)?);
+        Self::new(Arc::new(TransientInstancer::new(self.top.clone(), Arc::new(creation_fn))))
     }
 
-    pub fn with_transient_ok<S, Args>(&self, f: impl Fn<Args, Output = Box<S>> + Send + Sync + 'static) -> Self
+    pub fn with_transient_ok<S, Args>(&self, f: impl Fn(Args) -> Box<S> + Send + Sync + 'static) -> Self
         where S: Service + ?Sized, Arc<dyn Middleware>: ResolveStart<Args>
     {
-    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f.call(mw.resolve_start()?));
-        self.with(move |mw| TransientInstancer::new(mw, Arc::new(creation_fn)))
+    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f(mw.resolve_start()?));
+        Self::new(Arc::new(TransientInstancer::new(self.top.clone(), Arc::new(creation_fn))))
     }
     
     pub fn resolve<X>(&self) -> Result<X>
         where Arc<dyn Middleware>: ResolveStart<X>
     {
-        self.middleware.resolve_start()
+        self.top.resolve_start()
     }
 }
 
