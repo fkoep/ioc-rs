@@ -1,5 +1,3 @@
-#[macro_use]
-extern crate derive_more;
 extern crate downcast;
 extern crate once_cell;
 extern crate variadic_generics;
@@ -7,39 +5,84 @@ extern crate variadic_generics;
 use downcast::{AnySync, TypeMismatch};
 use once_cell::sync::OnceCell;
 use variadic_generics::va_expand;
-use std::error::Error as StdError;
+use std::error::{self, Error as StdError};
 use std::result::Result as StdResult;
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::fmt;
 
 // errors --------------------------------------------------
 
-pub type Error = Box<dyn StdError>;
+pub type Error = Box<dyn StdError + 'static>;
 pub type Result<T> = StdResult<T, Error>;
 
-#[derive(Debug, Display, Error, Constructor)]
-#[display(fmt = "instancer for {} not found", service_name)]
+#[derive(Debug)]
 pub struct InstancerNotFoundError {
     pub service_name: String
 }
 
-#[derive(Debug, Display, Error, Constructor)]
-#[display(fmt = "instance creation for {} failed: {}", service_name, creation_error)]
+impl InstancerNotFoundError {
+    pub fn new(service_name: String) -> Self {
+        Self{ service_name }
+    }
+}
+
+impl fmt::Display for InstancerNotFoundError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "instancer for {} not found", self.service_name)
+    }
+}
+
+impl error::Error for InstancerNotFoundError {}
+
+#[derive(Debug)]
 pub struct InstanceCreationError {
     pub service_name: String,
-    
-    //FIXME https://github.com/JelteF/derive_more/issues/122
-    // #[error(source)]
     pub creation_error: Error,
 }
 
-#[derive(Debug, Display, Error, Constructor)]
-#[display(fmt = "wrong type for instance of {}: {}", service_name, type_mismatch)]
+impl InstanceCreationError {
+    pub fn new(service_name: String, creation_error: Error) -> Self {
+        Self{ service_name, creation_error }
+    }
+}
+
+impl fmt::Display for InstanceCreationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "instance creation for {} failed: {}", self.service_name, self.creation_error)
+    }
+}
+
+impl error::Error for InstanceCreationError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+       Some(&*self.creation_error)
+    }
+}
+
+#[derive(Debug)]
 pub struct InstanceTypeError {
     pub service_name: String,
-    #[error(source)]
     pub type_mismatch: TypeMismatch,
 }
+
+impl InstanceTypeError {
+    pub fn new(service_name: String, type_mismatch: TypeMismatch) -> Self {
+        Self{ service_name, type_mismatch }
+    }
+}
+
+impl fmt::Display for InstanceTypeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "wrong type for instance of {}: {}", self.service_name, self.type_mismatch)
+    }
+}
+
+impl error::Error for InstanceTypeError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+       Some(&self.type_mismatch)
+    }
+}
+
 
 // Resolve & ResolveStart --------------------------------------------------
 
@@ -62,7 +105,7 @@ impl<R, X> ResolveStart<R> for X
     where R: Resolve, X: ResolveStart<R::Deps>
 {
     fn resolve_start(&self) -> Result<R> {
-        Ok(R::resolve(<X as ResolveStart<R::Deps>>::resolve_start(self)?)?)
+        R::resolve(<X as ResolveStart<R::Deps>>::resolve_start(self)?)
     }
 }
 
@@ -152,7 +195,7 @@ pub struct ContainerRoot;
 
 impl Middleware for ContainerRoot {
     fn instantiate(&self, req: InstantiationRequest) -> Result<InstanceRef> {
-        return Err(InstancerNotFoundError::new(req.service_name).into())
+        Err(InstancerNotFoundError::new(req.service_name).into())
     }
 }
 
@@ -282,7 +325,7 @@ impl Container {
     pub fn with_singleton<S, Args>(&self, f: impl Fn(Args) -> Result<Box<S>> + Send + Sync + 'static) -> Self
         where S: Service + ?Sized, Arc<dyn Middleware>: ResolveStart<Args>
     {
-    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f(mw.resolve_start()?)?);
+    	let creation_fn = move |mw: &Arc<dyn Middleware>| f(mw.resolve_start()?);
         Self::new(Arc::new(SingletonInstancer::new(self.top.clone(), Arc::new(creation_fn))))
     }
 
@@ -296,7 +339,7 @@ impl Container {
     pub fn with_transient<S, Args>(&self, f: impl Fn(Args) -> Result<Box<S>> + Send + Sync + 'static) -> Self
         where S: Service + ?Sized, Arc<dyn Middleware>: ResolveStart<Args>
     {
-    	let creation_fn = move |mw: &Arc<dyn Middleware>| Ok(f(mw.resolve_start()?)?);
+    	let creation_fn = move |mw: &Arc<dyn Middleware>| f(mw.resolve_start()?);
         Self::new(Arc::new(TransientInstancer::new(self.top.clone(), Arc::new(creation_fn))))
     }
 

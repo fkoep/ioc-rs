@@ -13,7 +13,6 @@ keywords = ["inversion", "control", "dependency", "injection", "di"]
 categories = ["data-structures", "rust-patterns"]
 
 [dependencies]
-derive_more = "0.99.17"
 downcast = "0.11.0"
 once_cell = "1.8.0"
 variadic_generics = "0.1.2"
