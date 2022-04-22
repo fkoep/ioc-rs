@@ -462,6 +462,12 @@ impl Container {
     {
         self.top.resolve_start()
     }
+
+    pub async fn resolve_async<X>(&self) -> Result<X>
+        where Arc<dyn Middleware>: ResolveStart<X>
+    {
+        self.top.resolve_start_async().await
+    }
 }
 
 // helpful aliases --------------------------------------------------
