@@ -1,6 +1,6 @@
 [package]
 name = "ioc"
-version = "0.11.1"
+version = "0.12.0"
 authors = ["Felix Köpge <fkoep@mailbox.org>"]
 license = "MIT"
 edition = "2021"
@@ -11,6 +11,10 @@ repository = "https://github.com/fkoep/ioc-rs"
 readme = "README.md"
 keywords = ["inversion", "control", "dependency", "injection", "di"]
 categories = ["data-structures", "rust-patterns"]
+
+[features]
+default = ["async"]
+async = []
 
 [dependencies]
 anyhow = "1.0"
